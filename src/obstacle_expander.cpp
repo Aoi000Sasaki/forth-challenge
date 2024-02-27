@@ -1,47 +1,38 @@
-#include "global_path_planner/obstacle_expander.h"
+#include "global_path_planner/obstacle_expander.hpp"
 
 // コンストラクタ
-ObstacleExpander::ObstacleExpander():private_nh_("~")
+ObstacleExpander::ObstacleExpander() : Node("obstacle_expander")
 {
     // パラメータの取得
-    private_nh_.getParam("hz", hz_);
-    private_nh_.getParam("sleep_time", sleep_time_);
-    private_nh_.getParam("target_margin", target_margin_);
+    hz_ = declare_parameter("hz", 10);
+    sleep_time_ = declare_parameter("sleep_time", 1.5);
+    target_margin_ = declare_parameter("target_margin", 0.25);
 
     // Subscriber
-    sub_raw_map_  = nh_.subscribe("/map", 1, &ObstacleExpander::map_callback, this);
+    sub_raw_map_  = create_subscription<nav_msgs::msg::OccupancyGrid>("/map", rclcpp::QoS(1).reliable(), std::bind(&ObstacleExpander::map_callback, this, std::placeholders::_1));
 
     // Publisher
-    pub_updated_map_ = nh_.advertise<nav_msgs::OccupancyGrid>("/map/updated_map", 1);
+    pub_updated_map_ = create_publisher<nav_msgs::msg::OccupancyGrid>("/map/updated_map", 1);
+
+    timer_ = create_wall_timer(std::chrono::duration<double>(1.0/hz_), std::bind(&ObstacleExpander::expand_obstacle, this));
 }
 
 // mapのコールバック関数
-void ObstacleExpander::map_callback(const nav_msgs::OccupancyGrid::ConstPtr& msg)
+void ObstacleExpander::map_callback(const nav_msgs::msg::OccupancyGrid& msg)
 {
-    raw_map_  = *msg;
+    raw_map_  = msg;
     flag_map_ = true;
-    ros::Duration(sleep_time_).sleep(); // 他のノードの起動を待つ(特にRviz)
+    std::this_thread::sleep_for(std::chrono::duration<double>(sleep_time_));
 }
 
-// 唯一，main文で実行する関数
-void ObstacleExpander::process()
-{
-    ros::Rate loop_rate(hz_); // 制御周波数の設定
-
-    while(ros::ok())
-    {
-        if(flag_map_)
-            expand_obstacle(); // 障害物の膨張
-        ros::spinOnce();       // コールバック関数の実行
-        loop_rate.sleep();     // 周期が終わるまで待つ
-    }
-}
 
 // 障害物を膨張
 void ObstacleExpander::expand_obstacle()
 {
-    ROS_INFO_STREAM("----- Obstacle Expander will begin ------");
-    begin_ = ros::Time::now(); // 実行時間のスタートを設定
+    if (!flag_map_) return; // mapの取得が完了していない場合は終了
+
+    RCLCPP_INFO(get_logger(), "----- Obstacle Expander will begin ------");
+    begin_ = clock_.now(); // 実行時間のスタートを設定
     updated_map_ = raw_map_;
 
     const int size = raw_map_.data.size();
@@ -49,7 +40,7 @@ void ObstacleExpander::expand_obstacle()
         if(raw_map_.data[index] == 100) // 「占有」のとき
             change_surrounding_grid_color(index); // 周囲のグリッドの色の変更
 
-    pub_updated_map_.publish(updated_map_);
+    pub_updated_map_->publish(updated_map_);
     show_exe_time(); // 実行時間を表示
     exit(0); // ノード終了
 }
@@ -219,6 +210,5 @@ double ObstacleExpander::calc_dist_cell(const int index1, const int index2)
 // 実行時間を表示（スタート時間beginを予め設定する）
 void ObstacleExpander::show_exe_time()
 {
-    ROS_INFO_STREAM("Duration = " << std::fixed << std::setprecision(2)
-                    << ros::Time::now().toSec() - begin_.toSec() << "s");
+    RCLCPP_INFO(get_logger(), "Duration = %.2fs", (clock_.now() - begin_).seconds());
 }
